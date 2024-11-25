@@ -92,11 +92,15 @@ fn default_enum_substructure(
         default_variant
     } {
         Ok(default_variant) => {
-            // We now know there is exactly one unit variant with exactly one `#[default]` attribute.
-            cx.expr_path(cx.path(default_variant.span, vec![
-                Ident::new(kw::SelfUpper, default_variant.span),
-                default_variant.ident,
-            ]))
+            match default_variant.data {
+                // We now know there is exactly one unit variant with exactly one `#[default]` attribute.
+                VariantData::Unit(..) => cx.expr_path(cx.path(default_variant.span, vec![
+                    Ident::new(kw::SelfUpper, default_variant.span),
+                    default_variant.ident,
+                ])),
+                VariantData::Struct { fields, recovered } => todo!(),
+                VariantData::Tuple(fields, _) => todo!(),
+            }
         }
         Err(guar) => DummyResult::raw_expr(trait_span, Some(guar)),
     };
@@ -155,12 +159,7 @@ fn extract_default_variant<'a>(
             return Err(guar);
         }
     };
-
-    if !matches!(variant.data, VariantData::Unit(..)) {
-        let guar = cx.dcx().emit_err(errors::NonUnitDefault { span: variant.ident.span });
-        return Err(guar);
-    }
-
+    
     if let Some(non_exhaustive_attr) = attr::find_by_name(&variant.attrs, sym::non_exhaustive) {
         let guar = cx.dcx().emit_err(errors::NonExhaustiveDefault {
             span: variant.ident.span,
