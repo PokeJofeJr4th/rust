@@ -1,6 +1,5 @@
 use core::ops::ControlFlow;
 
-use rustc_ast as ast;
 use rustc_ast::visit::visit_opt;
 use rustc_ast::{EnumDef, VariantData, attr};
 use rustc_expand::base::{Annotatable, DummyResult, ExtCtxt};
@@ -86,20 +85,53 @@ fn default_enum_substructure(
     trait_span: Span,
     enum_def: &EnumDef,
 ) -> BlockOrExpr {
+    // Note that `kw::Default` is "default" and `sym::Default` is "Default"!
+    let default_ident = cx.std_path(&[kw::Default, sym::Default, kw::Default]);
+    let default_call = |span| cx.expr_call_global(span, default_ident.clone(), ThinVec::new());
+
     let expr = match try {
         let default_variant = extract_default_variant(cx, enum_def, trait_span)?;
         validate_default_attribute(cx, default_variant)?;
         default_variant
     } {
         Ok(default_variant) => {
-            match default_variant.data {
+            match &default_variant.data {
                 // We now know there is exactly one unit variant with exactly one `#[default]` attribute.
                 VariantData::Unit(..) => cx.expr_path(cx.path(default_variant.span, vec![
                     Ident::new(kw::SelfUpper, default_variant.span),
                     default_variant.ident,
                 ])),
-                VariantData::Struct { fields, recovered } => todo!(),
-                VariantData::Tuple(fields, _) => todo!(),
+                VariantData::Tuple(fields, _) => {
+                    let exprs = fields.iter().map(|fd| default_call(fd.span)).collect();
+                    cx.expr_call_global(
+                        trait_span,
+                        vec![
+                            Ident::new(kw::SelfUpper, default_variant.span),
+                            default_variant.ident,
+                        ],
+                        exprs,
+                    )
+                }
+                VariantData::Struct { fields, .. } => {
+                    let default_fields = fields
+                        .iter()
+                        .map(|&FieldDef { span, ident, .. }| match ident {
+                            Some(ident) => Ok(cx.field_imm(span, ident, default_call(span))),
+                            None => Err(""),
+                        })
+                        .collect::<Result<_, _>>();
+                    match default_fields {
+                        Ok(default_fields) => cx.expr_struct(
+                            trait_span,
+                            cx.path(default_variant.span, vec![
+                                Ident::new(kw::SelfUpper, default_variant.span),
+                                default_variant.ident,
+                            ]),
+                            default_fields,
+                        ),
+                        Err(_e) => todo!(),
+                    }
+                }
             }
         }
         Err(guar) => DummyResult::raw_expr(trait_span, Some(guar)),
@@ -159,7 +191,7 @@ fn extract_default_variant<'a>(
             return Err(guar);
         }
     };
-    
+
     if let Some(non_exhaustive_attr) = attr::find_by_name(&variant.attrs, sym::non_exhaustive) {
         let guar = cx.dcx().emit_err(errors::NonExhaustiveDefault {
             span: variant.ident.span,
